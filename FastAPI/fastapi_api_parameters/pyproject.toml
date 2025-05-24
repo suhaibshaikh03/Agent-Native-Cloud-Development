@@ -1,0 +1,20 @@
+[project]
+name = "fastapi-api-parameters"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "suhaibshaikh03", email = "suhaibshaikh2003@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.115.12",
+    "pydantic>=2.11.5",
+]
+
+[project.scripts]
+fastapi-api-parameters = "fastapi_api_parameters:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
