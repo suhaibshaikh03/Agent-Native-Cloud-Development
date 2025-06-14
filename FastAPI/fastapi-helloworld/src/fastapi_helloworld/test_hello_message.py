@@ -1,3 +1,6 @@
+# for pytest filename should start with "test_*" or end with "*_test"
+# function should start with "test_*"
+# * = any name 
 from fastapi.testclient import TestClient
 from .main import app
 from .hello import addition
