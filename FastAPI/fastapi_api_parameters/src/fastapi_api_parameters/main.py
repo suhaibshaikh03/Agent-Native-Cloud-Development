@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Path, Query
+from fastapi import FastAPI, Path, Query, HTTPException
 from pydantic import BaseModel
 
 class User(BaseModel):
@@ -13,7 +13,9 @@ app = FastAPI()
  
 #path parameters
 @app.get("/info/{username}/{rollno}")
-def read_info(username:str, rollno:int):
+def read_info(username:str = Path(...,min_length=3,max_length=10) , rollno:int):
+    if usename == "Suhaib":
+        raise HTTPException(status_code=404,detail=f"username {Suhaib} not permitted")
     return {"username":username, "rollno":rollno}
 
 
