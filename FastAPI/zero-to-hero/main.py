@@ -121,7 +121,7 @@ class User(BaseModel):
     """
     id: int
     name: str = Field(..., min_length=2, max_length=50, description="User's full name")
-    email: str = Field(..., regex=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
+    email: str = Field(..., pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
     age: Optional[int] = Field(None, ge=0, le=120, description="Age between 0 and 120")
     is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.now)
@@ -134,7 +134,7 @@ class UserCreateRequest(BaseModel):
     This model defines the required fields when creating a user.
     """
     name: str = Field(..., min_length=2, max_length=50, description="User's full name")
-    email: str = Field(..., regex=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
+    email: str = Field(..., pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
     age: Optional[int] = Field(None, ge=0, le=120, description="Age between 0 and 120")
     tags: List[str] = Field(default=[], description="List of tags for the user")
 
