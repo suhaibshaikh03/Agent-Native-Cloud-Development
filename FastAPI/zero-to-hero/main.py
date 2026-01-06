@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
@@ -11,10 +11,28 @@ app = FastAPI()
 # Method: GET
 # Parameters: None
 # Returns: JSON object with a message
-@app.get("/")
-def read_root() -> dict:
-    "slash route"
-    return {"message": "Hello World"}
+class RootResponse(BaseModel):
+    """
+    Pydantic model for the root endpoint response.
+    This model defines the structure of the data returned by the root endpoint.
+    """
+    message: str
+    status: str = "success"
+    timestamp: datetime = Field(default_factory=datetime.now)
+    version: str = "1.0.0"
+
+
+@app.get("/", response_model=RootResponse)
+def read_root() -> RootResponse:
+    """
+    Root endpoint that returns structured data using Pydantic model.
+    Response follows RootResponse model structure with validation.
+    """
+    return RootResponse(
+        message="Hello World",
+        status="success",
+        version="1.0.0"
+    )
 
 # COMMENTED OUT PATH PARAMETER EXAMPLES
 # # USER ENDPOINT WITH INTEGER PATH PARAMETER
@@ -200,6 +218,105 @@ def get_user_example() -> UserResponse:
         tags=["designer", "ui/ux"]
     )
     return example_user
+
+
+# HTTP EXCEPTION EXAMPLES
+# HTTPException is used to return error responses to clients with specific status codes and detail messages.
+# It's imported from fastapi and is the standard way to handle errors in FastAPI applications.
+
+# How to call the endpoint in the URL directly: GET request to http://localhost:8000/users/123
+# Example: http://localhost:8000/users/123 (when user exists) or http://localhost:8000/users/999 (when user doesn't exist)
+# Description: Retrieves a user by ID, raises 404 error if user not found
+# Method: GET
+# Parameters: user_id (integer path parameter)
+# Returns: JSON object with user data or 404 error if not found
+@app.get("/users/{user_id}", response_model=UserResponse)
+def get_user_by_id(user_id: int) -> UserResponse:
+    """
+    Get a user by ID with error handling using HTTPException.
+    Raises 404 if user doesn't exist.
+    """
+    # Simulate a database of users
+    fake_users_db = {
+        1: {"id": 1, "name": "Alice Johnson", "email": "alice@example.com", "age": 25},
+        2: {"id": 2, "name": "Bob Smith", "email": "bob@example.com", "age": 35},
+        123: {"id": 123, "name": "Charlie Brown", "email": "charlie@example.com", "age": 30}
+    }
+
+    if user_id not in fake_users_db:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User with ID {user_id} not found",
+            headers={"X-Error": "User not found in database"}
+        )
+
+    user_data = fake_users_db[user_id]
+    return User(
+        id=user_data["id"],
+        name=user_data["name"],
+        email=user_data["email"],
+        age=user_data["age"]
+    )
+
+
+# How to call the endpoint in the URL directly: GET request to http://localhost:8000/admin with proper header
+# Example: http://localhost:8000/admin (with header "X-Token": "admin-secret")
+# Description: Admin-only endpoint that requires authentication token
+# Method: GET
+# Headers: X-Token (required) - must be "admin-secret"
+# Returns: JSON object with admin data or 401/403 error if unauthorized
+@app.get("/admin")
+def get_admin_data(x_token: str = None) -> dict:
+    """
+    Admin-only endpoint demonstrating HTTPException for authentication errors.
+    Raises 401 if no token provided, 403 if invalid token.
+    """
+    if x_token is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication token required",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    if x_token != "admin-secret":
+        raise HTTPException(
+            status_code=403,
+            detail="Access forbidden: Invalid token",
+            headers={"X-Error": "Invalid admin token"}
+        )
+
+    return {
+        "message": "Admin data accessed successfully",
+        "data": {"admin_features": True, "permissions": ["read", "write", "delete"]}
+    }
+
+
+# How to call the endpoint in the URL directly: GET request to http://localhost:8000/validate-email?email=valid@example.com
+# Example: http://localhost:8000/validate-email?email=invalid-email (with invalid email)
+# Description: Validates an email parameter, raises 422 error if invalid format
+# Method: GET
+# Parameters: email (query parameter, required)
+# Returns: JSON object confirming valid email or 422 error if invalid
+@app.get("/validate-email")
+def validate_email(email: str) -> dict:
+    """
+    Validates an email parameter using HTTPException for validation errors.
+    Raises 422 if email format is invalid.
+    """
+    import re
+    email_pattern = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+
+    if not re.match(email_pattern, email):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid email format: {email}",
+            headers={"X-Error": "Email validation failed"}
+        )
+
+    return {
+        "message": f"Email {email} is valid",
+        "email": email
+    }
 
 
 # QUERY PARAMETER EXAMPLES
