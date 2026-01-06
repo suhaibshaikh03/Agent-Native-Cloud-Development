@@ -2926,7 +2926,7 @@ class RequestLoggingMiddleware:
 setup_logging()
 ```
 
-### Example API Router
+### APIRouter and Route Organization with app.include_router
 ```python
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
@@ -2936,10 +2936,20 @@ from app.database import get_async_db
 from app.auth import get_current_active_user, get_current_admin_user
 from app.repositories import UserRepository, ItemRepository
 
-# Create API router
-api_router = APIRouter()
+# APIRouter is a powerful tool for organizing your FastAPI application by grouping related endpoints
+# It allows you to split your application into multiple files and maintain clean separation of concerns
 
-@api_router.get("/users/", response_model=List[UserResponse], tags=["users"])
+# Basic APIRouter creation with common configuration
+api_router = APIRouter(
+    prefix="/api/v1",
+    tags=["API v1"],
+    responses={404: {"description": "Not found"}},
+)
+
+# Example of a users router
+users_router = APIRouter(prefix="/users", tags=["users"])
+
+@users_router.get("/", response_model=List[UserResponse])
 async def get_users(
     skip: int = 0,
     limit: int = 100,
@@ -2956,7 +2966,7 @@ async def get_users(
     users = await repo.list(User, skip=skip, limit=limit, **filters)
     return users
 
-@api_router.get("/users/{user_id}", response_model=UserResponse, tags=["users"])
+@users_router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
     db: AsyncSession = Depends(get_async_db)
@@ -2973,7 +2983,7 @@ async def get_user(
 
     return user
 
-@api_router.post("/users/", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["users"])
+@users_router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_create: UserCreate,
     db: AsyncSession = Depends(get_async_db)
@@ -3007,7 +3017,7 @@ async def create_user(
     user = await repo.create(User, **user_data)
     return user
 
-@api_router.put("/users/{user_id}", response_model=UserResponse, tags=["users"])
+@users_router.put("/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: int,
     user_update: UserUpdate,
@@ -3039,7 +3049,7 @@ async def update_user(
     updated_user = await repo.update(User, user_id, **update_data)
     return updated_user
 
-@api_router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["users"])
+@users_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: int,
     current_user: User = Depends(get_current_admin_user)  # Only admins can delete users
@@ -3072,8 +3082,10 @@ async def delete_user(
 
     return
 
-# Item endpoints
-@api_router.get("/items/", response_model=List[ItemResponse], tags=["items"])
+# Example of an items router
+items_router = APIRouter(prefix="/items", tags=["items"])
+
+@items_router.get("/", response_model=List[ItemResponse])
 async def get_items(
     skip: int = 0,
     limit: int = 100,
@@ -3087,7 +3099,7 @@ async def get_items(
     items = await repo.list(Item, skip=skip, limit=limit, **filters)
     return items
 
-@api_router.get("/items/{item_id}", response_model=ItemResponse, tags=["items"])
+@items_router.get("/{item_id}", response_model=ItemResponse)
 async def get_item(
     item_id: int,
     db: AsyncSession = Depends(get_async_db)
@@ -3112,7 +3124,7 @@ async def get_item(
 
     return item
 
-@api_router.post("/items/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED, tags=["items"])
+@items_router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
 async def create_item(
     item_create: ItemCreate,
     current_user: User = Depends(get_current_active_user),
@@ -3128,7 +3140,7 @@ async def create_item(
     item = await repo.create(Item, **item_data)
     return item
 
-@api_router.put("/items/{item_id}", response_model=ItemResponse, tags=["items"])
+@items_router.put("/{item_id}", response_model=ItemResponse)
 async def update_item(
     item_id: int,
     item_update: ItemUpdate,
@@ -3160,7 +3172,7 @@ async def update_item(
     updated_item = await repo.update(Item, item_id, **update_data)
     return updated_item
 
-@api_router.delete("/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["items"])
+@items_router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_item(
     item_id: int,
     current_user: User = Depends(get_current_active_user),
@@ -3194,8 +3206,140 @@ async def delete_item(
 
     return
 
-# Include the router in main app
-# app.include_router(api_router, prefix="/api/v1")
+# Example of a nested router for admin functionality
+admin_router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin_user)])
+
+@admin_router.get("/stats", tags=["admin"])
+async def get_admin_stats(db: AsyncSession = Depends(get_async_db)):
+    """Get admin statistics."""
+    return {
+        "total_users": 100,
+        "total_items": 200,
+        "active_users_today": 50
+    }
+
+@admin_router.get("/users/{user_id}/full-profile", tags=["admin"])
+async def get_full_user_profile(user_id: int, db: AsyncSession = Depends(get_async_db)):
+    """Get full user profile with sensitive information (admin only)."""
+    repo = UserRepository(db)
+    user = await repo.get_by_id(User, user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    return user
+
+# Include all routers in the main API router
+api_router.include_router(users_router)
+api_router.include_router(items_router)
+api_router.include_router(admin_router)
+
+# In your main.py, you would include the router like this:
+# app.include_router(api_router, prefix="", tags=["api"])
+
+# Example of including with custom configuration
+# app.include_router(
+#     api_router,
+#     prefix="/api",
+#     tags=["main-api"],
+#     dependencies=[],
+#     responses={404: {"description": "Not found"}},
+# )
+
+# Example of organizing routers in separate files for better project structure:
+
+# File: app/api/v1/users.py
+"""
+from fastapi import APIRouter, Depends
+from app.database import get_async_db
+from app.models import UserResponse
+from app.repositories import UserRepository
+
+users_router = APIRouter(prefix="/users", tags=["users"])
+
+@users_router.get("/", response_model=List[UserResponse])
+async def get_users(db: AsyncSession = Depends(get_async_db)):
+    repo = UserRepository(db)
+    return await repo.list(User)
+
+# Additional user endpoints...
+"""
+
+# File: app/api/v1/items.py
+"""
+from fastapi import APIRouter, Depends
+from app.database import get_async_db
+from app.models import ItemResponse
+from app.repositories import ItemRepository
+
+items_router = APIRouter(prefix="/items", tags=["items"])
+
+@items_router.get("/", response_model=List[ItemResponse])
+async def get_items(db: AsyncSession = Depends(get_async_db)):
+    repo = ItemRepository(db)
+    return await repo.list(Item)
+
+# Additional item endpoints...
+"""
+
+# File: app/api/v1/__init__.py
+"""
+from fastapi import APIRouter
+from .users import users_router
+from .items import items_router
+
+api_v1_router = APIRouter(prefix="/v1")
+
+api_v1_router.include_router(users_router)
+api_v1_router.include_router(items_router)
+
+# This router can then be included in main.py
+"""
+
+# File: main.py
+"""
+from fastapi import FastAPI
+from app.api.v1 import api_v1_router
+
+app = FastAPI()
+
+# Include the versioned API router
+app.include_router(api_v1_router)
+
+# Additional configuration...
+"""
+
+# Best practices for using APIRouter:
+
+# 1. Group related endpoints together
+# 2. Use consistent prefix patterns
+# 3. Apply common dependencies at the router level
+# 4. Use tags for documentation organization
+# 5. Consider versioning your APIs (v1, v2, etc.)
+# 6. Separate concerns by functionality (users, items, orders, etc.)
+# 7. Use nested routers for complex applications
+
+# Advanced APIRouter example with dependencies and custom configuration
+def get_current_user_from_token():
+    """Dependency function that can be applied to entire routers."""
+    pass
+
+advanced_router = APIRouter(
+    prefix="/advanced",
+    tags=["advanced"],
+    dependencies=[Depends(get_current_user_from_token)],
+    responses={404: {"description": "Not found"}},
+)
+
+@advanced_router.get("/protected")
+async def protected_endpoint():
+    return {"message": "This endpoint requires authentication"}
+
+# You can also add middleware to specific routers
+# router.middleware("http")(some_middleware_function)
 ```
 
 ---
