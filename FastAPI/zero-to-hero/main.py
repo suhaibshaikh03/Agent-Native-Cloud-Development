@@ -113,6 +113,95 @@ def read_root() -> dict:
 #         "message": f"{profile_type.title()} profile for user {user_id}"
 #     }
 
+# PYDANTIC MODEL EXAMPLES
+class User(BaseModel):
+    """
+    Pydantic model for User data validation and serialization.
+    This model defines the structure and validation rules for user data.
+    """
+    id: int
+    name: str = Field(..., min_length=2, max_length=50, description="User's full name")
+    email: str = Field(..., regex=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
+    age: Optional[int] = Field(None, ge=0, le=120, description="Age between 0 and 120")
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.now)
+    tags: List[str] = []
+
+
+class UserCreateRequest(BaseModel):
+    """
+    Pydantic model for creating a new user.
+    This model defines the required fields when creating a user.
+    """
+    name: str = Field(..., min_length=2, max_length=50, description="User's full name")
+    email: str = Field(..., regex=r'^[\w\.-]+@[\w\.-]+\.\w+$', description="Valid email address")
+    age: Optional[int] = Field(None, ge=0, le=120, description="Age between 0 and 120")
+    tags: List[str] = Field(default=[], description="List of tags for the user")
+
+
+class UserResponse(BaseModel):
+    """
+    Pydantic model for user response data.
+    This model defines the structure of user data returned by the API.
+    """
+    id: int
+    name: str
+    email: str
+    age: Optional[int]
+    is_active: bool
+    created_at: datetime
+    tags: List[str]
+
+
+# How to call the endpoint in the URL directly: POST request to http://localhost:8000/users with JSON body
+# Example JSON body:
+# {
+#   "name": "John Doe",
+#   "email": "john.doe@example.com",
+#   "age": 30,
+#   "tags": ["developer", "python"]
+# }
+# Description: Creates a new user with validation using Pydantic model
+# Method: POST
+# Request body: JSON object following UserCreateRequest model structure
+# Returns: JSON object containing the created user with additional fields
+@app.post("/users", response_model=UserResponse)
+def create_user(user: UserCreateRequest) -> UserResponse:
+    """
+    Create a new user with Pydantic validation.
+    Request body must match UserCreateRequest model structure.
+    Response will match UserResponse model structure.
+    """
+    # Simulate creating a user with an auto-generated ID
+    created_user = User(
+        id=123,  # In a real app, this would come from a database
+        **user.dict()  # Unpack the validated input data
+    )
+    return created_user
+
+
+# How to call the endpoint in the URL directly: GET request to http://localhost:8000/user-example
+# Example: http://localhost:8000/user-example
+# Description: Returns an example user object demonstrating Pydantic model usage
+# Method: GET
+# Parameters: None
+# Returns: JSON object following UserResponse model structure
+@app.get("/user-example", response_model=UserResponse)
+def get_user_example() -> UserResponse:
+    """
+    Returns an example user demonstrating Pydantic model usage.
+    Response follows UserResponse model structure with validation.
+    """
+    example_user = User(
+        id=1,
+        name="Jane Smith",
+        email="jane.smith@example.com",
+        age=28,
+        tags=["designer", "ui/ux"]
+    )
+    return example_user
+
+
 # QUERY PARAMETER EXAMPLES
 # How to call the endpoint in the URL directly: http://localhost:8000/search?query=python
 # Example: http://localhost:8000/search?query=python&limit=10
