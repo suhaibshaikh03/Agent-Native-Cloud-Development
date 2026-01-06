@@ -224,6 +224,36 @@ def get_user_example() -> UserResponse:
 # HTTPException is used to return error responses to clients with specific status codes and detail messages.
 # It's imported from fastapi and is the standard way to handle errors in FastAPI applications.
 
+# HTTP STATUS CODES EXPLANATION:
+# 1xx (Informational): Request received, continuing process
+#   - 100 Continue: Server received request headers, client should continue
+#   - 101 Switching Protocols: Server is switching protocols as requested
+#   - 102 Processing: Server has received and is processing the request
+#
+# 2xx (Successful): Request successfully received, understood, and accepted
+#   - 200 OK: Standard response for successful requests
+#   - 201 Created: Request fulfilled and new resource created
+#   - 202 Accepted: Request accepted for processing but not completed
+#   - 204 No Content: Request successful but no content to send
+#
+# 3xx (Redirection): Further action needed to complete the request
+#   - 301 Moved Permanently: Resource moved permanently to new URL
+#   - 302 Found: Resource temporarily located at different URL
+#   - 304 Not Modified: Resource not modified since last request
+#
+# 4xx (Client Error): Request contains bad syntax or cannot be fulfilled
+#   - 400 Bad Request: Server cannot process due to malformed request
+#   - 401 Unauthorized: Authentication required or failed
+#   - 403 Forbidden: Server understood request but refuses to authorize
+#   - 404 Not Found: Requested resource not found
+#   - 422 Unprocessable Entity: Request well-formed but semantically invalid
+#
+# 5xx (Server Error): Server failed to fulfill valid request
+#   - 500 Internal Server Error: General server error
+#   - 502 Bad Gateway: Invalid response from upstream server
+#   - 503 Service Unavailable: Server temporarily unable to handle request
+#   - 504 Gateway Timeout: Server did not receive response from upstream server
+
 # How to call the endpoint in the URL directly: GET request to http://localhost:8000/users/123
 # Example: http://localhost:8000/users/123 (when user exists) or http://localhost:8000/users/999 (when user doesn't exist)
 # Description: Retrieves a user by ID, raises 404 error if user not found
@@ -257,6 +287,31 @@ def get_user_by_id(user_id: int) -> UserResponse:
         email=user_data["email"],
         age=user_data["age"]
     )
+
+
+# How to call the endpoint in the URL directly: GET request to http://localhost:8000/validate-id/0
+# Example: http://localhost:8000/validate-id/0 (raises 400 error) or http://localhost:8000/validate-id/1 (valid)
+# Description: Validates an ID parameter, raises 400 error if ID is 0 (invalid ID)
+# Method: GET
+# Parameters: id (integer path parameter)
+# Returns: JSON object confirming valid ID or 400 error if ID is 0
+@app.get("/validate-id/{id}")
+def validate_id(id: int) -> dict:
+    """
+    Validates an ID parameter, raises 400 error if ID is 0.
+    Example of raising HTTPException with status code 400 for invalid input.
+    """
+    if id == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid ID: ID cannot be 0",
+            headers={"X-Error": "ID validation failed"}
+        )
+
+    return {
+        "message": f"ID {id} is valid",
+        "id": id
+    }
 
 
 # How to call the endpoint in the URL directly: GET request to http://localhost:8000/admin with proper header
