@@ -336,6 +336,176 @@ async def upload_files(files: List[UploadFile] = File(...)):
 ```
 
 ### Dependency Injection Advanced Patterns
+
+Dependency injection is a core concept in FastAPI that allows you to share resources across your application efficiently. It solves the problem of repeated setup code in every endpoint and makes testing much easier.
+
+#### The Problem: Repeated Setup
+Without dependency injection, you would repeat setup code in every function:
+```python
+@app.get("/tasks")
+def list_tasks():
+    # Setup code repeated in EVERY endpoint
+    config = load_config_from_env()
+    logger = setup_logger("tasks")
+    return {"config": config.app_name}
+
+@app.get("/users")
+def list_users():
+    # Same setup, repeated again
+    config = load_config_from_env()
+    logger = setup_logger("users")
+    return {"config": config.app_name}
+```
+
+This creates problems:
+- Same code in every function
+- Hard to test (can't swap config for test config)
+- If setup logic changes, you update everywhere
+
+#### The Solution: Depends()
+With dependency injection:
+
+```python
+from fastapi import FastAPI, Depends
+
+app = FastAPI()
+
+
+def get_config():
+    """Provide configuration to endpoints."""
+    return {"app_name": "Task API", "version": "1.0"}
+
+
+@app.get("/tasks")
+def list_tasks(config: dict = Depends(get_config)):
+    return {"app": config["app_name"]}
+
+
+@app.get("/users")
+def list_users(config: dict = Depends(get_config)):
+    return {"app": config["app_name"]}
+```
+
+FastAPI:
+- Sees `Depends(get_config)`
+- Calls `get_config()` automatically
+- Passes the result to your function
+
+#### A Dependency Is Just a Function
+Any callable works as a dependency:
+
+```python
+def get_request_id() -> str:
+    """Generate unique ID for this request."""
+    import uuid
+    return str(uuid.uuid4())
+
+
+@app.get("/debug")
+def debug_info(request_id: str = Depends(get_request_id)):
+    return {"request_id": request_id}
+```
+
+Each request gets a new UUID. The dependency runs fresh for every request.
+
+#### Caching with lru_cache
+Some dependencies are expensive—reading config files, creating connections. You want them created once, not per-request:
+
+```python
+from functools import lru_cache
+
+
+@lru_cache
+def get_settings():
+    """Load settings once, reuse forever."""
+    print("Loading settings...")  # Only prints once!
+    return {
+        "app_name": "Task API",
+        "debug": True
+    }
+
+
+@app.get("/info")
+def app_info(settings: dict = Depends(get_settings)):
+    return {"app": settings["app_name"]}
+```
+
+Call `/info` ten times—you'll see "Loading settings..." printed only once.
+
+Use `@lru_cache` for:
+- Configuration that doesn't change
+- Expensive initialization (parsing files, creating clients)
+- Anything you'd normally put in a global variable
+
+#### Yield Dependencies for Cleanup
+Some resources need cleanup—file handles, connections, temporary files. Use yield instead of return:
+
+```python
+def get_temp_file():
+    """Provide a temporary file that gets cleaned up."""
+    import tempfile
+    import os
+
+    # Setup: create the file
+    fd, path = tempfile.mkstemp()
+    file = os.fdopen(fd, 'w')
+
+    try:
+        yield file  # Provide to endpoint
+    finally:
+        # Cleanup: runs after endpoint completes
+        file.close()
+        os.unlink(path)
+
+
+@app.post("/upload")
+def process_upload(temp: file = Depends(get_temp_file)):
+    temp.write("data")
+    return {"status": "processed"}
+```
+
+The `finally` block runs after your endpoint finishes—even if it raises an exception. This is how database sessions work.
+
+#### Complete Example: Request Logger
+Here's a practical dependency that logs every request:
+
+```python
+from fastapi import FastAPI, Depends, Request
+from datetime import datetime
+
+app = FastAPI()
+
+
+def get_request_logger(request: Request):
+    """Log request details and provide logger to endpoint."""
+    start = datetime.now()
+    method = request.method
+    path = request.url.path
+
+    print(f"[{start}] {method} {path} - started")
+
+    yield {"method": method, "path": path, "start": start}
+
+    end = datetime.now()
+    duration = (end - start).total_seconds()
+    print(f"[{end}] {method} {path} - completed in {duration:.3f}s")
+
+
+@app.get("/tasks")
+def list_tasks(log: dict = Depends(get_request_logger)):
+    return {"tasks": [], "logged_path": log["path"]}
+
+
+@app.post("/tasks")
+def create_task(log: dict = Depends(get_request_logger)):
+    return {"id": 1, "logged_method": log["method"]}
+```
+
+Notice how `Request` is also injected—FastAPI provides it automatically.
+
+#### Advanced Dependency Patterns
+
+Simple dependency:
 ```python
 from fastapi import Depends, Header, HTTPException
 from typing import Optional
@@ -358,8 +528,10 @@ async def verify_key(x_key: str = Header(...)):
     if x_key != "fake-super-secret-key":
         raise HTTPException(status_code=400, detail="X-Key header invalid")
     return x_key
+```
 
-# Complex dependency with database session
+Complex dependency with database session:
+```python
 from sqlalchemy.ext.asyncio import AsyncSession
 
 async def get_db_session() -> AsyncSession:
@@ -400,6 +572,129 @@ async def read_users_me(
 ):
     return current_user
 ```
+
+#### Dependency Chains
+Dependencies can depend on other dependencies. FastAPI resolves the chain automatically:
+
+```python
+@lru_cache
+def get_config():
+    return {
+        "app_name": "My API",
+        "max_items": 100,
+        "debug": True
+    }
+
+
+def get_logger(config: dict = Depends(get_config)):
+    """Logger that uses the config."""
+    import logging
+    logger = logging.getLogger(config["app_name"])
+    logger.setLevel(logging.DEBUG if config["debug"] else logging.INFO)
+    return logger
+
+
+@app.get("/log-test")
+def log_test(logger: logging.Logger = Depends(get_logger)):
+    logger.info("This is a test log")
+    return {"message": "logged"}
+```
+
+#### Class Dependencies
+Instead of functions, you can use a class as a dependency. Classes with `__init__` parameters work as dependencies:
+
+```python
+class TaskService:
+    def __init__(self, db_session: AsyncSession = Depends(get_db_session)):
+        self.db = db_session
+        self.logger = logging.getLogger(__name__)
+
+    async def list_tasks(self):
+        # Use self.db to query tasks
+        return []
+
+    async def create_task(self, task_data: dict):
+        # Use self.db to create task
+        return task_data
+
+
+@app.get("/tasks")
+async def get_tasks(service: TaskService = Depends(TaskService)):
+    return await service.list_tasks()
+```
+
+#### Testing Dependencies
+The power of DI is testability. Override any dependency with a mock for testing:
+
+```python
+# In your test file
+def override_get_current_user():
+    return User(
+        id=1,
+        username="testuser",
+        email="test@example.com",
+        is_active=True
+    )
+
+app.dependency_overrides[get_current_user] = override_get_current_user
+
+# Now all endpoints that use get_current_user will get the test user
+```
+
+#### Best Practices and Common Mistakes
+
+**Common Mistake 1: Calling the function instead of passing it**
+```python
+# Wrong - function called at import time!
+@app.get("/tasks")
+def list_tasks(config = Depends(get_config())):  # () is wrong!
+    ...
+
+# Correct - pass the function itself
+@app.get("/tasks")
+def list_tasks(config = Depends(get_config)):  # No ()
+    ...
+```
+
+**Common Mistake 2: Forgetting to yield in cleanup dependencies**
+```python
+# Wrong - return doesn't allow cleanup code
+def get_file():
+    f = open("data.txt")
+    return f  # File never closed!
+
+# Correct - yield allows cleanup
+def get_file():
+    f = open("data.txt")
+    try:
+        yield f
+    finally:
+        f.close()
+```
+
+**Common Mistake 3: Caching things that should be fresh**
+```python
+# Wrong - request ID should be different each time!
+@lru_cache
+def get_request_id():
+    return str(uuid.uuid4())
+
+# Correct - no cache for per-request values
+def get_request_id():
+    return str(uuid.uuid4())
+```
+
+**Best Practice: Use dependency injection for configuration, database sessions, authentication, and logging.**
+
+**Best Practice: Use `lru_cache` for expensive, non-changing dependencies like configuration.**
+
+**Best Practice: Use `yield` dependencies for resources that need cleanup like database sessions, file handles, or temporary resources.**
+
+**Best Practice: Chain dependencies when one depends on another (e.g., logger depending on config).**
+
+**Best Practice: Use class dependencies for complex services that group related functionality.**
+
+**Best Practice: Use dependency overrides for testing to inject mock dependencies.**
 
 ### Background Tasks
 ```python
@@ -3340,6 +3635,135 @@ async def protected_endpoint():
 
 # You can also add middleware to specific routers
 # router.middleware("http")(some_middleware_function)
+
+# Practical example: E-commerce API with multiple routers
+# File: app/api/ecommerce/__init__.py
+"""
+from fastapi import APIRouter
+from .products import products_router
+from .orders import orders_router
+from .cart import cart_router
+from .reviews import reviews_router
+
+ecommerce_router = APIRouter(prefix="/ecommerce")
+
+# Include all e-commerce related routers
+ecommerce_router.include_router(products_router)
+ecommerce_router.include_router(orders_router)
+ecommerce_router.include_router(cart_router)
+ecommerce_router.include_router(reviews_router)
+"""
+
+# File: app/api/ecommerce/products.py
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from typing import List
+from app.models import Product, ProductCreate, ProductUpdate
+
+products_router = APIRouter(prefix="/products", tags=["products"])
+
+@products_router.get("/", response_model=List[Product])
+async def get_products(skip: int = 0, limit: int = 100):
+    # Implementation here
+    pass
+
+@products_router.get("/{product_id}", response_model=Product)
+async def get_product(product_id: int):
+    # Implementation here
+    pass
+
+@products_router.post("/", response_model=Product, dependencies=[Depends(require_admin)])
+async def create_product(product: ProductCreate):
+    # Implementation here
+    pass
+
+@products_router.put("/{product_id}", response_model=Product, dependencies=[Depends(require_admin)])
+async def update_product(product_id: int, product: ProductUpdate):
+    # Implementation here
+    pass
+
+@products_router.delete("/{product_id}", dependencies=[Depends(require_admin)])
+async def delete_product(product_id: int):
+    # Implementation here
+    pass
+"""
+
+# File: app/api/ecommerce/orders.py
+"""
+from fastapi import APIRouter, Depends
+from typing import List
+from app.models import Order, OrderCreate
+
+orders_router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
+
+@orders_router.get("/", response_model=List[Order])
+async def get_orders(skip: int = 0, limit: int = 100):
+    # Implementation here
+    pass
+
+@orders_router.get("/{order_id}", response_model=Order)
+async def get_order(order_id: int):
+    # Implementation here
+    pass
+
+@orders_router.post("/", response_model=Order)
+async def create_order(order: OrderCreate):
+    # Implementation here
+    pass
+"""
+
+# In main.py:
+"""
+from fastapi import FastAPI
+from app.api.ecommerce import ecommerce_router
+
+app = FastAPI()
+
+# Include the e-commerce router
+app.include_router(ecommerce_router)
+
+# Other routers...
+app.include_router(auth_router)
+app.include_router(admin_router)
+"""
+
+# Advanced example with conditional router inclusion
+"""
+from fastapi import FastAPI
+import os
+
+app = FastAPI()
+
+# Conditionally include debug endpoints
+if os.getenv("DEBUG_MODE") == "true":
+    from app.api.debug import debug_router
+    app.include_router(debug_router, prefix="/debug")
+
+# Conditionally include payment endpoints
+if os.getenv("ENABLE_PAYMENTS") == "true":
+    from app.api.payments import payments_router
+    app.include_router(payments_router, prefix="/payments")
+"""
+
+# Example of router with custom exception handling
+"""
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+error_handling_router = APIRouter()
+
+@error_handling_router.get("/test-error")
+async def test_error():
+    raise HTTPException(status_code=404, detail="Test error")
+
+# Add custom exception handler to router
+@error_handling_router.exception_handler(404)
+async def custom_404_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=404,
+        content={"message": "Custom 404: Resource not found", "path": str(request.url)}
+    )
+"""
 ```
 
 ---
@@ -3591,9 +4015,228 @@ preload_app = True
 ## Best Practices
 
 ### Error Handling
+
+When things go wrong, your API needs to communicate clearly. A missing task should return 404, not crash the server. Invalid input should return 422, not accept garbage. Good error handling makes APIs predictable—and predictability matters enormously for agents.
+
+#### Why Error Handling Matters for Agents
+
+When humans use an API, they read error messages and adjust. When agents call your API, they need to programmatically decide what to do. Clear, consistent errors enable agents to:
+
+- Retry on transient failures (5xx errors)
+- Report bad input to users (4xx errors with helpful messages)
+- Handle missing resources gracefully (404 → create new one? skip?)
+- Never retry on business rule violations (400 → input fundamentally wrong)
+
+An agent that can't distinguish "try again later" from "your request is wrong" will either waste resources retrying or fail silently on fixable problems.
+
+#### HTTP Status Codes: The Communication Layer
+
+HTTP status codes are a shared language between server and client:
+
+| Range | Category | Meaning | Agent Should |
+|-------|----------|---------|--------------|
+| 2xx | Success | Request worked | Proceed normally |
+| 4xx | Client Error | Client sent something wrong | Fix request, don't retry |
+| 5xx | Server Error | Server failed internally | Retry with backoff |
+
+Common codes you'll use:
+
+| Code | Name | When to Use |
+|------|------|-------------|
+| 200 | OK | Request succeeded (default) |
+| 201 | Created | Resource created successfully |
+| 204 | No Content | Success, nothing to return |
+| 400 | Bad Request | Client sent invalid data (business rules) |
+| 404 | Not Found | Resource doesn't exist |
+| 422 | Unprocessable Entity | Validation failed (Pydantic) |
+| 500 | Internal Server Error | Something broke on the server |
+
+The agent perspective: A well-designed agent inspects the status code FIRST, then reads the body. This is more reliable than parsing error messages:
+
+```python
+# Agent-side code (not your server, but how agents consume your API)
+response = await client.get("/tasks/999")
+if response.status_code == 404:
+    # Resource doesn't exist - create it or skip
+    ...
+elif response.status_code >= 500:
+    # Server problem - retry with exponential backoff
+    ...
+```
+
+#### 400 vs 422: The Distinction That Confuses Everyone
+
+This trips up almost every developer. Let's be precise:
+
+**422 Unprocessable Entity** — Pydantic validation failed. The JSON is valid, but the data doesn't match your schema.
+
+```python
+# Pydantic returns 422 automatically when:
+# - Required field missing
+# - Wrong data type
+# - Field constraint violated
+
+class TaskCreate(BaseModel):
+    title: str  # If missing, 422
+
+# POST with {"description": "no title"} → 422
+```
+
+**400 Bad Request** — Business logic validation failed. The data is valid according to the schema, but it breaks your rules.
+
+```python
+@app.post("/tasks")
+def create_task(task: TaskCreate):
+    # Business rule: title can't be empty whitespace
+    if not task.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Title cannot be empty or whitespace"
+        )
+    # ...
+```
+
+The way to think about it:
+
+- **422**: "Your JSON doesn't match my schema" (Pydantic catches this)
+- **400**: "Your data passed schema validation but violates business rules" (you catch this)
+
+For agents: Both mean "don't retry with the same input." But 422 suggests a type/format problem, while 400 suggests a logical problem. An agent might use this distinction to give users more specific guidance.
+
+#### The HTTPException Class
+
+FastAPI provides HTTPException for returning error responses:
+
 ```python
 from fastapi import HTTPException, status
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task with id {task_id} not found"
+        )
+    return task
+```
+
+What happens when you raise?
+
+- FastAPI stops executing your function
+- Returns the specified status code
+- Sends the detail as JSON
+
+Output:
+```
+HTTP/1.1 404 Not Found
+content-type: application/json
+
+{
+  "detail": "Task with id 1 not found"
+}
+```
+
+Why raise, not return? Exceptions bubble up through your code. If you have helper functions, they can raise HTTPException directly without needing to propagate error codes back up the call chain.
+
+#### Using the status Module
+
+Magic numbers like 404 work, but are harder to read. FastAPI provides named constants:
+
+```python
+from fastapi import HTTPException, status
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task with id {task_id} not found"
+        )
+    return task
+```
+
+Now the code is self-documenting. Common constants:
+
+- `status.HTTP_200_OK`
+- `status.HTTP_201_CREATED`
+- `status.HTTP_204_NO_CONTENT`
+- `status.HTTP_400_BAD_REQUEST`
+- `status.HTTP_404_NOT_FOUND`
+- `status.HTTP_422_UNPROCESSABLE_ENTITY`
+- `status.HTTP_500_INTERNAL_SERVER_ERROR`
+
+A subtlety: Python's autocomplete works with `status.HTTP_...`, making it easy to discover available codes. With magic numbers, you'd need to look them up.
+
+#### Setting Success Status Codes
+
+Override the default 200 for specific endpoints:
+
+```python
+# Return 201 for resource creation
+@app.post("/tasks", status_code=status.HTTP_201_CREATED)
+def create_task(task: TaskCreate):
+    # ...
+    return new_task
+
+# Return 204 for deletion (no body)
+@app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(task_id: int):
+    # ... delete logic
+    return None  # No response body with 204
+```
+
+Why 201 for create? It signals "resource was created" vs "here's a resource that existed." Agents can distinguish between idempotent retrieval and actual creation.
+
+Why 204 for delete? The resource is gone—there's nothing meaningful to return. Some APIs return 200 with confirmation; 204 is more semantically correct.
+
+#### Custom Exception Handlers
+
+You can register custom exception handlers to convert your custom exceptions to proper HTTP responses:
+
+```python
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+import logging
+
+app = FastAPI()
+
+# Custom exception classes
+class TaskNotFoundError(Exception):
+    def __init__(self, task_id: int):
+        self.task_id = task_id
+        super().__init__(f"Task with id {task_id} not found")
+
+class InvalidStatusError(Exception):
+    def __init__(self, status: str, valid_statuses: list):
+        self.status = status
+        self.valid_statuses = valid_statuses
+        super().__init__(f"Invalid status '{status}'. Valid options: {valid_statuses}")
+
+# Register exception handlers
+@app.exception_handler(TaskNotFoundError)
+async def task_not_found_handler(request: Request, exc: TaskNotFoundError):
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "error_code": "TASK_NOT_FOUND",
+            "message": str(exc),
+            "task_id": exc.task_id
+        }
+    )
+
+@app.exception_handler(InvalidStatusError)
+async def invalid_status_handler(request: Request, exc: InvalidStatusError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "error_code": "INVALID_STATUS",
+            "message": str(exc),
+            "valid_statuses": exc.valid_statuses,
+            "received_status": exc.status
+        }
+    )
 
 # Custom exception handlers
 @app.exception_handler(ValueError)
