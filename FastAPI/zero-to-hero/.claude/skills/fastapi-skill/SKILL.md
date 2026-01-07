@@ -4253,7 +4253,289 @@ def validate_user_id(user_id: int):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User ID must be positive"
         )
+
+#### Complete Error Handling Example
+
+Here's a comprehensive example showing different error types in practice:
+
+```python
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel
+from typing import Optional
+
+app = FastAPI(title="Task API")
+
+class TaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+
+class TaskUpdate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+tasks: list[dict] = []
+task_counter = 0
+
+VALID_STATUSES = {"pending", "in_progress", "completed"}
+
+def find_task(task_id: int) -> dict | None:
+    """Helper to find a task by ID."""
+    for task in tasks:
+        if task["id"] == task_id:
+            return task
+    return None
+
+@app.post("/tasks", status_code=status.HTTP_201_CREATED)
+def create_task(task: TaskCreate):
+    global task_counter
+
+    # Business validation (400 error)
+    if not task.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Title cannot be empty or whitespace"
+        )
+
+    task_counter += 1
+    new_task = {
+        "id": task_counter,
+        "title": task.title.strip(),
+        "description": task.description,
+        "status": "pending"
+    }
+    tasks.append(new_task)
+    return new_task
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task with id {task_id} not found"
+        )
+    return task
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, task_update: TaskUpdate):
+    task = find_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task with id {task_id} not found"
+        )
+
+    # Validate title (400 error)
+    if not task_update.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Title cannot be empty or whitespace"
+        )
+
+    # Validate status (400 error)
+    if task_update.status and task_update.status not in VALID_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}"
+        )
+
+    task["title"] = task_update.title.strip()
+    if task_update.description is not None:
+        task["description"] = task_update.description
+    if task_update.status:
+        task["status"] = task_update.status
+
+    return task
+
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task with id {task_id} not found"
+        )
+
+    tasks.remove(task)
+    return {"message": "Task deleted", "id": task_id}
 ```
+
+#### Error Message Design: Helping Agents Help Users
+
+Error messages aren't just for debugging—agents will parse them to inform users. Design them carefully:
+
+**Be specific:**
+```python
+# Vague - agent can't help user
+detail="Error"
+
+# Specific - agent knows what to tell user
+detail=f"Task with id {task_id} not found"
+```
+
+**Include context:**
+```python
+# Missing context - what status IS valid?
+detail="Invalid status"
+
+# With context - agent can suggest valid options
+detail=f"Invalid status '{task_update.status}'. Must be one of: {', '.join(VALID_STATUSES)}"
+```
+
+**Don't expose internals:**
+```python
+# Exposes implementation - security risk, unhelpful
+detail=f"KeyError: 'tasks' at line 47"
+
+# User-friendly - agent can relay appropriately
+detail="An internal error occurred. Please try again."
+```
+
+**Consider structured errors for agents:**
+```python
+# Simple string (works)
+detail="Task not found"
+
+# Structured (better for agents)
+detail={
+    "error_code": "TASK_NOT_FOUND",
+    "message": "Task with id 999 not found",
+    "task_id": 999
+}
+```
+
+The structured format gives agents machine-readable codes while preserving human-readable messages.
+
+#### Custom Error Response Models
+
+For more consistent structured error responses, you can create custom error response models:
+
+```python
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+
+class ErrorDetail(BaseModel):
+    """Standard error response format for the API."""
+    error_code: str
+    message: str
+    details: Optional[Dict[str, Any]] = None
+    timestamp: str
+    path: Optional[str] = None
+
+# Create a custom exception that includes structured data
+class APIError(Exception):
+    def __init__(self, error_code: str, message: str, details: Optional[Dict[str, Any]] = None):
+        self.error_code = error_code
+        self.message = message
+        self.details = details
+        super().__init__(message)
+
+# Custom exception handler for APIError
+@app.exception_handler(APIError)
+async def api_error_handler(request: Request, exc: APIError):
+    from datetime import datetime
+
+    error_response = ErrorDetail(
+        error_code=exc.error_code,
+        message=exc.message,
+        details=exc.details,
+        timestamp=datetime.utcnow().isoformat(),
+        path=str(request.url)
+    )
+
+    # Map error codes to HTTP status codes
+    status_map = {
+        "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "INVALID_INPUT": status.HTTP_400_BAD_REQUEST,
+        "VALIDATION_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "INTERNAL_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR
+    }
+
+    http_status = status_map.get(exc.error_code, status.HTTP_400_BAD_REQUEST)
+
+    return JSONResponse(
+        status_code=http_status,
+        content=error_response.dict()
+    )
+
+# Usage in endpoints
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise APIError(
+            error_code="TASK_NOT_FOUND",
+            message=f"Task with id {task_id} not found",
+            details={"task_id": task_id}
+        )
+    return task
+```
+
+#### Best Practices and Common Mistakes
+
+**Common Mistake 1: Forgetting to raise the exception**
+```python
+# Wrong - creates exception but doesn't raise it
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    if not find_task(task_id):
+        HTTPException(status_code=404, detail="Not found")  # Does nothing!
+    return task
+
+# Correct - raise the exception
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    if not find_task(task_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return task
+```
+
+This is a subtle bug—your code runs without errors but returns wrong data.
+
+**Common Mistake 2: Using 200 for errors**
+```python
+# Wrong - 200 for missing resource
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        return {"error": "Not found"}  # Still 200!
+
+# Correct - 404 for missing
+raise HTTPException(status_code=404, detail="Not found")
+```
+
+Agents check status codes first. A 200 with an error in the body is confusing and breaks retry logic.
+
+**Common Mistake 3: Mixing exception types**
+```python
+# Wrong - raises Python exception, becomes 500
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    task = find_task(task_id)
+    if not task:
+        raise ValueError("Not found")  # 500 Internal Server Error
+
+# Correct - use HTTPException for HTTP errors
+raise HTTPException(status_code=404, detail="Not found")
+```
+
+Python exceptions that escape your function become 500 errors. Users see "Internal Server Error," which is unhelpful and suggests your server is broken (even though the logic is correct).
+
+**Best Practice: Use HTTPException for HTTP errors, not generic Python exceptions.**
+
+**Best Practice: Use status module constants instead of magic numbers.**
+
+**Best Practice: Distinguish between 400 (business logic) and 422 (validation) errors.**
+
+**Best Practice: Design error messages for both human users and machine agents.**
+
+**Best Practice: Use structured error responses with machine-readable codes.**
+
+**Best Practice: Implement custom exception handlers for domain-specific errors.**
+
+**Best Practice: Log error details for debugging while returning user-friendly messages.**
 
 ### Middleware Examples
 ```python
