@@ -1,5 +1,5 @@
 from sqlmodel import SQLModel,Field, create_engine, select, Session
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from typing import Optional, List
 from datetime import datetime
 from dotenv import load_dotenv
@@ -31,8 +31,10 @@ def get_tasks(session: Session = Depends(get_session)) -> List[Task]:
 
 @app.get("/gettask/{task_id}")
 def get_task(task_id: int, session: Session = Depends(get_session)) -> Task:
-    pass
-    
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 @app.post(f"/createtask")
 def create_task(task: Task, session: Session = Depends(get_session)) -> Task:
