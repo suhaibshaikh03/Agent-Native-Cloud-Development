@@ -753,6 +753,237 @@ async def get_custom_response(response: Response):
 
 ---
 
+## Database Integration with SQLModel
+
+### Basic SQLModel Integration
+
+SQLModel combines Pydantic and SQLAlchemy for type-safe database operations. Here's how to integrate SQLModel with FastAPI:
+
+```python
+from sqlmodel import SQLModel, Field, create_engine, select, Session
+from fastapi import FastAPI, Depends, HTTPException
+from typing import Optional, List
+from dotenv import load_dotenv
+import os
+
+app = FastAPI()
+load_dotenv()
+
+DATABASE_URL = os.getenv("DB_URL")
+engine = create_engine(DATABASE_URL, echo=True)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+class Task(SQLModel, table=True):
+    """Task stored in database."""
+    # id is assigned by the database automatically if not passed
+    id: Optional[int] = Field(default=None, primary_key=True, nullable=False)
+    description: Optional[str] = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+
+# return all tasks in list format
+@app.get("/getalltasks")
+def get_tasks(session: Session = Depends(get_session)) -> List[Task]:
+    tasks = session.exec(select(Task)).all()
+    return tasks
+
+# returns a single task
+@app.get("/gettask/{task_id}")
+def get_task(task_id: int, session: Session = Depends(get_session)) -> Task:
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+# creates a new task, or a new record in the Task table
+@app.post("/createtask")
+def create_task(task: Task, session: Session = Depends(get_session)) -> Task:
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return task
+```
+
+### Database Session Management Best Practices
+
+When working with SQLModel and FastAPI, proper session management is crucial:
+
+```python
+from contextlib import contextmanager
+from sqlmodel import Session
+from typing import Generator
+
+@contextmanager
+def get_db_session() -> Generator[Session, None, None]:
+    """
+    Context manager for database sessions.
+    Ensures proper cleanup of database connections.
+    """
+    session = Session(engine)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+# Alternative using FastAPI dependency with yield
+def get_session() -> Generator[Session, None, None]:
+    """
+    FastAPI dependency for database sessions.
+    Handles session lifecycle automatically.
+    """
+    with Session(engine) as session:
+        yield session
+```
+
+### Environment Configuration for Databases
+
+Properly configure your database connections using environment variables:
+
+```python
+# .env file
+DB_URL=postgresql://username:password@localhost:5432/mydatabase
+
+# In your application
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DB_URL")
+if not DATABASE_URL:
+    raise ValueError("DB_URL environment variable not set")
+
+# Engine with connection pooling for production
+from sqlmodel import create_engine
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,
+    max_overflow=30,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    echo=False  # Set to True for development to see SQL queries
+)
+```
+
+### Creating Tables on Startup
+
+Initialize your database tables when the application starts:
+
+```python
+from sqlmodel import SQLModel
+
+@app.on_event("startup")
+def on_startup():
+    """Create all tables when the application starts."""
+    print("Creating tables...")
+    SQLModel.metadata.create_all(engine)
+    print("Tables created successfully")
+```
+
+### Error Handling with Database Operations
+
+Handle common database errors appropriately:
+
+```python
+from fastapi import HTTPException
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int, session: Session = Depends(get_session)) -> Task:
+    """
+    Get a task by ID with proper error handling.
+    """
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task with ID {task_id} not found"
+        )
+    return task
+
+@app.post("/tasks", status_code=201)
+def create_task(task: Task, session: Session = Depends(get_session)) -> Task:
+    """
+    Create a new task with error handling for database constraints.
+    """
+    try:
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to create task: {str(e)}"
+        )
+```
+
+### Advanced Database Patterns
+
+#### Filtering and Querying
+```python
+@app.get("/tasks")
+def get_filtered_tasks(
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    session: Session = Depends(get_session)
+) -> List[Task]:
+    """
+    Get tasks with optional filtering and pagination.
+    """
+    query = select(Task)
+
+    if title:
+        query = query.where(Task.title.contains(title))
+    if description:
+        query = query.where(Task.description.contains(description))
+
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+
+    tasks = session.exec(query).all()
+    return tasks
+```
+
+#### Transaction Management
+```python
+@app.post("/tasks/batch-create")
+def batch_create_tasks(
+    tasks: List[Task],
+    session: Session = Depends(get_session)
+) -> List[Task]:
+    """
+    Create multiple tasks in a single transaction.
+    If any task fails, all are rolled back.
+    """
+    created_tasks = []
+    try:
+        for task in tasks:
+            session.add(task)
+            session.flush()  # Get the ID without committing
+            created_tasks.append(task)
+
+        session.commit()
+        return created_tasks
+    except Exception:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Batch creation failed, all changes rolled back"
+        )
+```
+
+---
+
 ## Authentication Systems
 
 ### JWT Authentication with Security Best Practices
