@@ -17,18 +17,20 @@ def get_session():
 
 class Task(SQLModel, table=True):
     """Task stored in database."""
+    # id is assigned by the database automatically if not passed
     id: Optional[int] = Field(default=None, primary_key=True, nullable=False)
     description: Optional[str] = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=200)
 
 
 
-
+# return all tasks(dictionary) in list format
 @app.get("/getalltasks")
 def get_tasks(session: Session = Depends(get_session)) -> List[Task]:
     tasks = session.exec(select(Task)).all()
     return tasks
 
+# returns a single task(dictionary)
 @app.get("/gettask/{task_id}")
 def get_task(task_id: int, session: Session = Depends(get_session)) -> Task:
     task = session.get(Task, task_id)
@@ -36,6 +38,7 @@ def get_task(task_id: int, session: Session = Depends(get_session)) -> Task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
+# creates a new task(dictionary), or a new record in the Task table
 @app.post(f"/createtask")
 def create_task(task: Task, session: Session = Depends(get_session)) -> Task:
     session.add(task)
