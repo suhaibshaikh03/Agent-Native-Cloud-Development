@@ -1190,6 +1190,327 @@ async def refresh_access_token(refresh_token: str):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 ```
 
+### SQLModel Integration for User Management with JWT Authentication
+For production applications, it's recommended to use SQLModel for user management with JWT authentication. Here's a comprehensive example:
+
+```python
+from sqlmodel import SQLModel, Field, create_engine, Session, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine
+from typing import Optional, List
+from fastapi import Depends, HTTPException, status
+from enum import Enum
+import enum
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer
+import os
+import secrets
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 scheme for token authentication
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# Security configuration
+SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# User role enumeration
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+
+# Base models
+class UserBase(SQLModel):
+    username: str = Field(unique=True, index=True, max_length=50)
+    email: str = Field(unique=True, index=True, max_length=100)
+    full_name: Optional[str] = Field(default=None, max_length=100)
+    is_active: bool = Field(default=True)
+    role: UserRole = Field(default=UserRole.USER)
+
+class User(UserBase, table=True):
+    """User table model for authentication."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    hashed_password: str = Field(max_length=255)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class UserCreate(UserBase):
+    """Schema for creating a new user."""
+    password: str = Field(min_length=6, max_length=128)
+
+class UserRegister(UserCreate):
+    """Schema for user registration."""
+    pass
+
+class UserLogin(SQLModel):
+    """Schema for user login."""
+    username: str
+    password: str
+
+class UserPublic(UserBase):
+    """Public user schema without sensitive data."""
+    id: int
+    created_at: datetime
+
+class UserUpdate(SQLModel):
+    """Schema for updating user."""
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    is_active: Optional[bool] = None
+    role: Optional[UserRole] = None
+
+class Token(SQLModel):
+    """Schema for authentication tokens."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class TokenData(SQLModel):
+    """Schema for token data."""
+    username: Optional[str] = None
+
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+engine = create_engine(DATABASE_URL)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+# Authentication utilities
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against a hashed password."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def hash_password(password: str) -> str:
+    """Hash a plain password."""
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT access token."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT refresh token."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_user_by_username(db: Session, username: str) -> Optional[User]:
+    """Retrieve a user by username from the database."""
+    statement = select(User).where(User.username == username)
+    user = db.exec(statement).first()
+    return user
+
+def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
+    """Authenticate a user by username and password."""
+    user = get_user_by_username(db, username)
+    if not user or not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_session)) -> User:
+    """Dependency to get the current user from the token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        token_type: str = payload.get("type")
+
+        if username is None:
+            raise credentials_exception
+        if token_type != "access":
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = get_user_by_username(db, username)
+    if user is None:
+        raise credentials_exception
+
+    return user
+
+def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency to get the current active user (checks if user is active)."""
+    if not current_user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+# Authentication routes
+from fastapi import APIRouter
+
+auth_router = APIRouter(prefix="/auth", tags=["authentication"])
+
+@auth_router.post("/register", response_model=UserPublic)
+def register_user(user_data: UserRegister, db: Session = Depends(get_session)):
+    """Register a new user."""
+    # Check if user already exists
+    existing_user = db.exec(
+        select(User).where(
+            (User.username == user_data.username) | (User.email == user_data.email)
+        )
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered"
+        )
+
+    # Hash the password
+    hashed_password = hash_password(user_data.password)
+
+    # Create new user
+    db_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        full_name=user_data.full_name,
+        hashed_password=hashed_password
+    )
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    return db_user
+
+@auth_router.post("/login", response_model=Token)
+def login_user(user_credentials: UserLogin, db: Session = Depends(get_session)):
+    """Login a user and return access and refresh tokens."""
+    user = authenticate_user(db, user_credentials.username, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+
+    # Create refresh token
+    refresh_token_expires = timedelta(days=7)
+    refresh_token = create_refresh_token(
+        data={"sub": user.username}, expires_delta=refresh_token_expires
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@auth_router.get("/me", response_model=UserPublic)
+def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """Get current user's information."""
+    return current_user
+
+# Include the auth router in your main app
+# app.include_router(auth_router)
+```
+
+### Advanced JWT Security Features
+Here are additional security features you can implement with JWT authentication:
+
+```python
+# Blacklist tokens for logout functionality
+blacklisted_tokens = set()
+
+def blacklist_token(token: str):
+    """Add a token to the blacklist."""
+    blacklisted_tokens.add(token)
+
+def is_token_blacklisted(token: str) -> bool:
+    """Check if a token is blacklisted."""
+    return token in blacklisted_tokens
+
+# Token rotation for enhanced security
+def rotate_tokens(old_refresh_token: str) -> tuple[str, str]:
+    """Rotate refresh tokens for enhanced security."""
+    # Validate old refresh token
+    try:
+        payload = jwt.decode(old_refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        token_type: str = payload.get("type")
+
+        if username is None or token_type != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Create new access and refresh tokens
+    access_token = create_access_token(data={"sub": username})
+    new_refresh_token = create_access_token(
+        data={"sub": username},
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+
+    # Blacklist the old refresh token
+    blacklist_token(old_refresh_token)
+
+    return access_token, new_refresh_token
+
+# JWT claims validation
+def validate_token_claims(payload: dict) -> bool:
+    """Validate additional claims in the JWT token."""
+    # Check for required claims
+    required_claims = ["sub", "exp", "type"]
+    for claim in required_claims:
+        if claim not in payload:
+            return False
+
+    # Check token type
+    token_type = payload.get("type")
+    if token_type not in ["access", "refresh"]:
+        return False
+
+    # Additional custom validations can be added here
+    return True
+
+# Secure token storage in cookies (alternative to headers)
+from fastapi.responses import Response
+
+def create_secure_response_with_token(access_token: str, refresh_token: str) -> Response:
+    """Create a response with secure cookie tokens."""
+    response = Response()
+    # Set secure, http-only cookies
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=True,  # Only send over HTTPS in production
+        samesite="strict",
+        max_age=1800  # 30 minutes
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=604800  # 7 days
+    )
+    return response
+```
+
 ### OAuth2 with Authorization Code Flow (Google, GitHub, etc.)
 ```python
 from fastapi import Request
