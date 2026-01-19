@@ -1,9 +1,97 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
+import time
 
 app = FastAPI()
+
+# MIDDLEWARE EXAMPLES
+# Middleware in FastAPI is a function that works with every request/response cycle
+# It can modify requests before they reach the route handler
+# And can modify responses before they're sent back to the client
+# Middlewares are executed in the order they are added
+
+# Custom Middleware 1: Logging Middleware
+# This middleware logs incoming requests and outgoing responses
+class LoggingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # This middleware only handles HTTP requests
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        # Extract request information
+        request = Request(scope)
+        method = request.method
+        url = str(request.url)
+
+        print(f"[LOGGING MIDDLEWARE] - Request received: {method} {url}")
+        print(f"[LOGGING MIDDLEWARE] - Headers: {dict(request.headers)}")
+
+        # Record start time for response time calculation
+        start_time = time.time()
+
+        # Define a custom send function to intercept response
+        async def custom_send(message):
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                print(f"[LOGGING MIDDLEWARE] - Response status: {status_code}")
+
+            elif message["type"] == "http.response.body":
+                duration = time.time() - start_time
+                print(f"[LOGGING MIDDLEWARE] - Request completed in {duration:.4f}s")
+                print(f"[LOGGING MIDDLEWARE] - Response body length: {len(message.get('body', b''))} bytes")
+
+            # Send the original message
+            await send(message)
+
+        # Pass control to the next middleware/route handler
+        await self.app(scope, receive, custom_send)
+
+# Custom Middleware 2: Timing Middleware
+# This middleware adds timing information to the response headers
+class TimingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # This middleware only handles HTTP requests
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        # Record start time
+        start_time = time.time()
+
+        print("[TIMING MIDDLEWARE] - Processing request...")
+
+        # Define a custom send function to add timing headers to the response
+        async def custom_send(message):
+            if message["type"] == "http.response.start":
+                # Calculate response time
+                duration = time.time() - start_time
+
+                # Add custom timing header to the response
+                headers = message.get("headers", [])
+                headers.append((b"x-response-time", f"{duration*1000:.2f}ms".encode()))
+
+                print(f"[TIMING MIDDLEWARE] - Added response time header: {duration*1000:.2f}ms")
+
+                # Update the message with new headers
+                message["headers"] = headers
+
+            # Send the message
+            await send(message)
+
+        # Pass control to the next middleware/route handler
+        await self.app(scope, receive, custom_send)
+
+# Add the middleware to the application
+# Order matters: LoggingMiddleware will execute first, then TimingMiddleware
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(TimingMiddleware)
 
 # ROOT ENDPOINT
 # How to use in search bar: http://localhost:8000/
